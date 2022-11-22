@@ -1,0 +1,204 @@
+---
+title: "Medicago Climate Distribution"
+date: 2022-11-22
+author: Tyler Smith
+---
+
+# Contents
+
+- `medicago.Rmd` :: This file
+- `./data/` :: raw data
+- `./data/medicago_grdi_2022-11-22.csv` :: records from
+  [GBIF](https://gbif.org). The file name indicates the date when I
+  took the 'snapshot' from my technician, who continues to add
+  geolocations. The original GBIF download doi is `10.15468/DL.7ARG5Z`
+- `./data/maps/` :: a directory to store map data
+- `./data/wc/` :: a directory to store [WorldClim](https://worldclim.org)
+    data 
+
+# Libraries
+
+```{R libraries}
+library(geodata)
+library(usdm)
+library(vegan)
+```
+
+# Data
+
+
+```{R grdi}
+grdi <- read.csv("data/medicago_grdi_2022-11-22.csv",
+                 na.strings = "")
+## keep only records with complete coordinates
+grdi <- grdi[! is.na(grdi$decimalLatitude) & !
+             is.na(grdi$decimalLongitude), ]
+occs <- vect(grdi, geom = c("decimalLongitude",
+                            "decimalLatitude"),
+             crs = "+proj=longlat +datum=WGS84")
+
+## download Worldclim data and country maps; requires an
+## internet connection the first time this is run, but saves
+## a local copy for future use.
+
+wc <- worldclim_global(var = "bio", res = "10", path = "data/wc")
+basemap <- world(path = "data/maps")
+
+## Thin to 1 record per raster cell (10 minutes resolution,
+## set above)
+
+occs <- spatSample(occs, size = 1, method = "random",
+                   strata = wc)
+occs <- cbind(occs, extract(wc, occs))
+
+
+## Remove highly collinear variables for some analyses:
+vifCheck <- vifcor(data.frame(occs[, names(wc)]), th = 0.7)
+vifVars <- vifCheck@results$Variables
+
+## all WorldClim Variables:
+occsAll <- occs[, names(wc)]
+occsAll <- occsAll[ complete.cases(data.frame(occsAll)), ]
+
+## highly collinear variables removed:
+occs <- occs[, vifVars]
+occs <- occs[ complete.cases(data.frame(occs)), ]
+
+```
+
+# Map
+
+Simple plot of thinned records:
+
+```{R record_plot}
+plot(basemap, border = 'grey')
+points(occs, col = "#FF000020")
+```
+
+# Clustering
+
+Test various clustering approaches to find the 'best' summary:
+
+```{R clustering}
+wcDist <- dist(scale(data.frame(occs)))
+wcClust <- hclust(wcDist)
+hclustCoph <- cor(wcDist, cophenetic(wcClust))
+
+wcUPGMA <- hclust(wcDist, method = "average")
+upgmaCoph <- cor(wcDist, cophenetic(wcUPGMA))
+
+wcwardD <- hclust(wcDist, method = "ward.D")
+wardDCoph <- cor(wcDist, cophenetic(wcwardD))
+
+wcwardD2 <- hclust(wcDist, method = "ward.D2")
+wardD2Coph <- cor(wcDist, cophenetic(wcwardD2))
+
+wcsingle <- hclust(wcDist, method = "single")
+singleCoph <- cor(wcDist, cophenetic(wcsingle))
+
+wcWPGMA <- hclust(wcDist, method = "mcquitty")
+wpgmaCoph <- cor(wcDist, cophenetic(wcWPGMA))
+
+wcWPGMC <- hclust(wcDist, method = "median")
+wpgmcCoph <- cor(wcDist, cophenetic(wcWPGMC))
+
+wcUPGMC <- hclust(wcDist, method = "centroid")
+upgmcCoph <- cor(wcDist, cophenetic(wcUPGMC))
+```
+
+UPGMA was the best fit, according to cophenetic correlation, but not super
+interesting. Most of the early groups are small clusters of outliers.
+
+
+### PCoA
+
+For visualization. NMDS takes a long time to run, so I fall back to this as
+a faster option.
+
+```{R ordination}
+wcMDS <- cmdscale(wcDist, eig = TRUE)
+plot(wcMDS$points, asp = 1, pch = 16, col = "#00000010",
+     cex = 2)
+```
+
+## UPGMA Cluster Map
+
+Best cophenetic results. See different clusters on the map, change the `k`
+value to see finer splits.
+
+```{R group-plot}
+gPlot <- function(k = 2){
+  plot(basemap)
+  points(occs, col = cutree(wcUPGMA, k = k),
+         pch = cutree(wcUPGMA, k = k))
+}
+
+gPlot(k = 16)
+```
+
+## PCoA Gradient/Axes Map
+
+Change grad to map the first (1) or second (2) axis on the map. Can't do >
+2 unless you set k in `cmdscale` above to a higher value, the default is 2.
+
+```{R gradient-plot}
+gradPlot <- function(grad = 1){
+  plot(basemap)
+  brks <- seq(min(wcMDS$points), max(wcMDS$points),
+              length.out = 100)
+  grps <- cut(wcMDS$points, breaks = brks,
+              include.lowest = TRUE)
+  points(occs, col = heat.colors(100)[grps])
+}
+
+gradPlot(grad = 1)
+gradPlot(grad = 2)
+```
+
+## WorldClim Plots
+
+- BIO1 = Annual Mean Temperature
+- BIO2 = Mean Diurnal Range (Mean of monthly (max temp - min temp))
+- BIO3 = Isothermality (BIO2/BIO7) (×100)
+- BIO4 = Temperature Seasonality (standard deviation ×100)
+- BIO5 = Max Temperature of Warmest Month
+- BIO6 = Min Temperature of Coldest Month
+- BIO7 = Temperature Annual Range (BIO5-BIO6)
+- BIO8 = Mean Temperature of Wettest Quarter
+- BIO9 = Mean Temperature of Driest Quarter
+- BIO10 = Mean Temperature of Warmest Quarter
+- BIO11 = Mean Temperature of Coldest Quarter
+- BIO12 = Annual Precipitation
+- BIO13 = Precipitation of Wettest Month
+- BIO14 = Precipitation of Driest Month
+- BIO15 = Precipitation Seasonality (Coefficient of Variation)
+- BIO16 = Precipitation of Wettest Quarter
+- BIO17 = Precipitation of Driest Quarter
+- BIO18 = Precipitation of Warmest Quarter
+- BIO19 = Precipitation of Coldest Quarter
+
+
+```{R wc-plot}
+wcPlot <- function(var = "wc2.1_10m_bio_14"){
+  plot(basemap)
+  dat <- data.frame(occsAll[,var])[[1]]
+  brks <- seq(min(dat), max(dat),
+              length.out = 100)
+  grps <- cut(dat, breaks = brks,
+              include.lowest = TRUE)
+  points(occs, col = heat.colors(100)[grps])
+}
+
+## precip of driest month
+wcPlot()
+
+## max temp of hottest month
+wcPlot(var = "wc2.1_10m_bio_5")
+
+## min temp of coldest month
+wcPlot(var = "wc2.1_10m_bio_6")
+
+## change the value of var to see other variables
+
+```
+
